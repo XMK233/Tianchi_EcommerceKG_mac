@@ -16,7 +16,7 @@ np.random.seed(42)
 torch.manual_seed(42)
 torch.cuda.manual_seed_all(42)
 
-scheme_type = "ensemble_faiss"
+scheme_type = "es_fs_e10"
 
 # 数据路径（请根据你的实际路径修改）
 BASE_DIR = "/Users/minkexiu/Downloads/GitHub/Tianchi_EcommerceKG_mac"
@@ -40,7 +40,7 @@ TRAINED_MODEL_PATHS = {
 EMBEDDING_DIM = 100
 LEARNING_RATE = 0.001
 WEIGHT_DECAY = 1e-5
-EPOCHS = 1 ##【TODO】这里可以修改多一点。
+EPOCHS = 10 ##【TODO】这里可以修改多一点。
 BATCH_SIZE = 256
 NEGATIVE_SAMPLES = 10
 MAX_LINES = None
@@ -472,8 +472,8 @@ def main():
     print(f"实体数: {mapper.entity_count}, 关系数: {mapper.relation_count}")
 
     model_classes = {
-        'TransE': TransE, ##【TODO】实际跑的时候要放开的这里。
-        # 'TransH': TransH,
+        # 'TransE': TransE, ##【TODO】实际跑的时候要放开的这里。
+        'TransH': TransH,
         # 'TransD': TransD,
     }
 
@@ -491,14 +491,14 @@ def main():
         ##【TODO】实际跑的时候要放开的这里。
         evaluate_model(model, dev_data, mapper, device) 
     
-    ##【TODO】实际跑的时候要放开的这里。
-    # 🔥 评估融合模型
-    evaluate_ensemble(loaded_models_with_weight, dev_data, mapper, device) 
+    # ##【TODO】实际跑的时候要放开的这里。
+    # # 🔥 评估融合模型
+    # evaluate_ensemble(loaded_models_with_weight, dev_data, mapper, device) 
 
-    ##【TODO】实际跑的时候要放开的这里。
-    # 执行融合预测
-    predict_ensemble(loaded_models_with_weight, test_data, mapper, device, MAX_HEAD_ENTITIES)
-    print("🎉 所有任务完成！融合预测及评估已完成。")
+    # ##【TODO】实际跑的时候要放开的这里。
+    # # 执行融合预测
+    # predict_ensemble(loaded_models_with_weight, test_data, mapper, device, MAX_HEAD_ENTITIES)
+    # print("🎉 所有任务完成！融合预测及评估已完成。")
 
 if __name__ == "__main__":
     main()
