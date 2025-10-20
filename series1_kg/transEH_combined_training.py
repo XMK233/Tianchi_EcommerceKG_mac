@@ -16,7 +16,7 @@ np.random.seed(42)
 torch.manual_seed(42)
 torch.cuda.manual_seed_all(42)
 
-scheme_type = "srs3_tryEHD"
+scheme_type = "s4_combinedEH"
 
 # 数据路径（请根据你的实际路径修改）
 BASE_DIR = "/Users/minkexiu/Downloads/GitHub/Tianchi_EcommerceKG_mac"
@@ -32,22 +32,21 @@ os.makedirs(MODEL_DIR, exist_ok=True)
 # 模型路径 
 TRAINED_MODEL_PATHS = {
     'TransE': f"{MODEL_DIR}/transE.pth",
-    'TransH': f"{MODEL_DIR}/transH.pth",
-    'TransD': f"{MODEL_DIR}/transD.pth"
+    'TransH': f"{MODEL_DIR}/transH.pth"
 }
 
 # 超参数
 EMBEDDING_DIM = 100
 LEARNING_RATE = 0.001
 WEIGHT_DECAY = 1e-5
-EPOCHS = 1 ##【TODO】这里可以修改多一点。
+EPOCHS = 1  ##【TODO】这里可以修改多一点。
 BATCH_SIZE = 256
 NEGATIVE_SAMPLES = 10
 MAX_LINES = None
 MAX_HEAD_ENTITIES = None
 LR_DECAY_STEP = 5
 LR_DECAY_FACTOR = 0.1
-
+FORCE_RETRAIN = False ## 【TODO】根据情况设置。
 
 # ==================== 数据集 ====================
 class KnowledgeGraphDataset(torch.utils.data.Dataset):
@@ -175,91 +174,28 @@ class TransH(nn.Module):
         with torch.no_grad():
             self.E.weight.data.div_(torch.norm(self.E.weight.data, dim=1, keepdim=True) + 1e-9)
 
-
-# ==================== TransD （已修复 + 优化）====================
-class TransD(nn.Module):
-    def __init__(self, num_entities, num_relations, dim):
-        super().__init__()
-        self.dim = dim
-        self.E = nn.Embedding(num_entities, dim)
-        self.R = nn.Embedding(num_relations, dim)
-        self.E_proj = nn.Embedding(num_entities, dim)  # 实体投影向量
-        self.R_proj = nn.Embedding(num_relations, dim)  # 关系投影向量
-
-        # 初始化
-        nn.init.xavier_uniform_(self.E.weight)
-        nn.init.xavier_uniform_(self.R.weight)
-        nn.init.xavier_uniform_(self.E_proj.weight)
-        nn.init.xavier_uniform_(self.R_proj.weight)
-
-    def project(self, e, e_proj, r_proj):
-        """将实体 e 投影到由 e_proj 和 r_proj 定义的空间"""
-        # TransD: e_m = e_proj * r_proj^T * e
-        # 简化实现：e_m = e + (e_proj · r_proj) * e
-        # 更标准做法：使用外积投影，但常用简化为：e_m = e + (e_proj @ r_proj.T) 不可行，改为：
-        # 标准做法：e_m = W_r * e * W_e^T，但实现复杂，常用简化：
-        # 这里采用：h_proj = h + (h_proj_vec @ r_proj_vec.T) 不可行
-        # 改为标准实现：h_proj = h + (h_proj_vec · r_proj_vec) * h？不对
-
-        # 正确简化 TransD 投影：h_proj = h + (h_proj_vec @ r_proj_vec.T) × h？太复杂
-
-        # 更常见实现：使用双线性投影
-        # 参考：https://arxiv.org/abs/1509.05490
-        # 我们采用简化版本：h_proj = h + (h_proj_vec · r_proj_vec) * h？不对
-
-        # ✅ 标准实现（PyKE 等库）：
-        # h_proj = h + (h_proj_vec @ r_proj_vec.T) 不对
-        # 正确：h_proj = W_r * h * W_e^T → 太复杂
-
-        # ✅ 简化版本（广泛使用）：
-        # h_proj = h + (h_proj_vec ⊗ r_proj_vec) × h？也不对
-
-        # ✅ 实际常用实现（类似 TransR）：
-        # h_proj = h + (h_proj_vec · r_proj_vec) 是标量，不能直接加
-
-        # 🛠️ 修正：使用外积构造投影矩阵太慢，常用近似：
-        # h_proj = h + (h_proj_vec * r_proj_vec) * h？维度不对
-
-        # ✅ 正确简化（来自 OpenKE）：
-        # h_proj = h + (h_proj_vec @ r_proj_vec.T) 不可行
-
-        # 🚫 原始代码逻辑错误，我们改为 **标准 TransD 投影公式**：
-
-        # 正确公式：M_{r} = r_proj * h_proj^T + I
-        # h_proj = M_r @ h
-        # 但计算 M_r 是 [dim, dim]，太大
-
-        # ✅ 实用实现（来自 ConvE 论文实现）：
-        # h_proj = h + (h_proj_vec · r_proj_vec) * h？仍不对
-
-        # 🛠️ 改为 **正确但高效实现**（参考：https://github.com/thunlp/OpenKE/blob/OpenKE-PyTorch/models/TransD.py）
-
-        # 正确做法：
-        return e + torch.sum(e * e_proj, dim=1, keepdim=True) * r_proj
-        # 这是常见近似，表示：投影方向由 e_proj 和 r_proj 共同决定
-
-    def forward(self, h, r, t):
-        h_emb = self.project(self.E(h), self.E_proj(h), self.R_proj(r))
-        t_emb = self.project(self.E(t), self.E_proj(t), self.R_proj(r))
-        r_vec = self.R(r)
-        return torch.norm(h_emb + r_vec - t_emb, p=1, dim=1)
-
-    def get_query_embedding(self, h, r):
-        h_emb = self.project(self.E(h), self.E_proj(h), self.R_proj(r))
-        r_vec = self.R(r)
-        return h_emb + r_vec
-
-    def normalize_entities(self):
-        with torch.no_grad():
-            self.E.weight.data.div_(torch.norm(self.E.weight.data, dim=1, keepdim=True) + 1e-9)
-
-
-# ==================== 训练 & 加载 ====================
-def train_model(model, model_name, train_dataset, mapper, device):
+def train_model(model, model_name, train_dataset, mapper, device, pretrained_E=None, pretrained_R=None):
+    """
+    训练模型，支持用预训练的 E/R 初始化
+    """
     if os.path.exists(TRAINED_MODEL_PATHS[model_name]) and not FORCE_RETRAIN:
         print(f"[{model_name}] 已存在训练好的模型，跳过训练")
         return
+
     print(f"[{model_name}] 开始训练...")
+
+    # ========== 初始化：从预训练模型加载 E 和 R ==========
+    if pretrained_E is not None and hasattr(model, 'E'):
+        print(f"✅ 使用预训练实体嵌入初始化 {model_name}.E")
+        with torch.no_grad():
+            model.E.weight.data.copy_(pretrained_E)
+    
+    if pretrained_R is not None and hasattr(model, 'R'):
+        print(f"✅ 使用预训练关系嵌入初始化 {model_name}.R")
+        with torch.no_grad():
+            model.R.weight.data.copy_(pretrained_R)
+
+    # ========== 正常训练流程 ==========
     loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_fn)
     optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=LR_DECAY_STEP, gamma=LR_DECAY_FACTOR)
@@ -274,15 +210,15 @@ def train_model(model, model_name, train_dataset, mapper, device):
             r = torch.tensor([mapper.relation_to_id[r] for r in r_list], device=device)
             t = torch.tensor([mapper.entity_to_id[t] for t in t_list], device=device)
 
-            # ========== 生成负样本（确保不等于正样本）==========
+            # 负样本生成（已修复）
             neg_t = torch.randint(0, mapper.entity_count, (len(h), NEGATIVE_SAMPLES), device=device)
-            pos_t_expanded = t.unsqueeze(1).expand(-1, NEGATIVE_SAMPLES)  # [B, K]
+            pos_t_expanded = t.unsqueeze(1).expand(-1, NEGATIVE_SAMPLES)
             mask = (neg_t == pos_t_expanded)
             while mask.any():
                 neg_t[mask] = torch.randint(0, mapper.entity_count, (mask.sum(),), device=device)
-                mask = (neg_t == pos_t_expanded)  # 重新检查
+                mask = (neg_t == pos_t_expanded)
 
-            # ========== 前向传播 ==========
+            # 前向
             pos_score = model(h, r, t)
             neg_score = model(
                 h.unsqueeze(1).expand(-1, NEGATIVE_SAMPLES).reshape(-1),
@@ -290,25 +226,23 @@ def train_model(model, model_name, train_dataset, mapper, device):
                 neg_t.reshape(-1)
             ).reshape(-1, NEGATIVE_SAMPLES)
 
-            # ========== 损失计算 ==========
             loss = torch.mean(torch.relu(pos_score.unsqueeze(1) - neg_score + 1.0))
 
-            # ========== 反向传播 ==========
+            # 反向
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
-            # ========== 实体归一化 ==========
+            # 归一化
             if hasattr(model, 'normalize_entities'):
                 model.normalize_entities()
 
             epoch_loss += loss.item()
             progress.set_postfix(loss=loss.item())
-
         scheduler.step()
         print(f"[{model_name}] Epoch {epoch+1} Loss: {epoch_loss / len(loader):.4f}")
 
-    # ========== 保存模型 ==========
+    # 保存模型
     torch.save({
         'model_state_dict': model.state_dict(),
         'entity_count': mapper.entity_count,
@@ -319,6 +253,142 @@ def train_model(model, model_name, train_dataset, mapper, device):
     }, TRAINED_MODEL_PATHS[model_name])
     print(f"[{model_name}] 模型已保存")
 
+def combined_train_model(transE_model, transH_model, train_dataset, mapper, device, epochs=EPOCHS):
+    """
+    联合训练 TransE 和 TransH 模型，采用 (e+h) * epoch 的方式
+    每个 epoch 中，先训练 TransE，然后训练 TransH 并使用最新的 TransE 参数初始化
+    """
+    print("\n" + "="*50)
+    print("🚀 开始联合训练 TransE 和 TransH (e+h)*epoch")
+    print("="*50)
+    
+    # 初始化两个模型的优化器
+    transE_optimizer = optim.AdamW(transE_model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+    transH_optimizer = optim.AdamW(transH_model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+    
+    transE_scheduler = optim.lr_scheduler.StepLR(transE_optimizer, step_size=LR_DECAY_STEP, gamma=LR_DECAY_FACTOR)
+    transH_scheduler = optim.lr_scheduler.StepLR(transH_optimizer, step_size=LR_DECAY_STEP, gamma=LR_DECAY_FACTOR)
+    
+    transE_model.to(device)
+    transH_model.to(device)
+    
+    loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_fn)
+    
+    for epoch in range(epochs):
+        print(f"\n📌 Epoch {epoch+1}/{epochs}")
+        
+        # ========== 训练 TransE ==========
+        transE_model.train()
+        transE_epoch_loss = 0
+        print("🔄 训练 TransE...")
+        progress = tqdm(loader, desc=f"TransE Epoch {epoch+1}")
+        
+        for h_list, r_list, t_list in progress:
+            h = torch.tensor([mapper.entity_to_id[h] for h in h_list], device=device)
+            r = torch.tensor([mapper.relation_to_id[r] for r in r_list], device=device)
+            t = torch.tensor([mapper.entity_to_id[t] for t in t_list], device=device)
+
+            # 负样本生成
+            neg_t = torch.randint(0, mapper.entity_count, (len(h), NEGATIVE_SAMPLES), device=device)
+            pos_t_expanded = t.unsqueeze(1).expand(-1, NEGATIVE_SAMPLES)
+            mask = (neg_t == pos_t_expanded)
+            while mask.any():
+                neg_t[mask] = torch.randint(0, mapper.entity_count, (mask.sum(),), device=device)
+                mask = (neg_t == pos_t_expanded)
+
+            # 前向
+            pos_score = transE_model(h, r, t)
+            neg_score = transE_model(
+                h.unsqueeze(1).expand(-1, NEGATIVE_SAMPLES).reshape(-1),
+                r.unsqueeze(1).expand(-1, NEGATIVE_SAMPLES).reshape(-1),
+                neg_t.reshape(-1)
+            ).reshape(-1, NEGATIVE_SAMPLES)
+
+            loss = torch.mean(torch.relu(pos_score.unsqueeze(1) - neg_score + 1.0))
+
+            # 反向
+            transE_optimizer.zero_grad()
+            loss.backward()
+            transE_optimizer.step()
+
+            # 归一化
+            transE_model.normalize_entities()
+
+            transE_epoch_loss += loss.item()
+            progress.set_postfix(loss=loss.item())
+        
+        transE_scheduler.step()
+        print(f"✅ TransE Epoch {epoch+1} Loss: {transE_epoch_loss / len(loader):.4f}")
+        
+        # ========== 使用 TransE 的参数初始化 TransH 并训练 ==========
+        # 复制 TransE 的参数到 TransH
+        with torch.no_grad():
+            transH_model.E.weight.data.copy_(transE_model.E.weight.data)
+            transH_model.R.weight.data.copy_(transE_model.R.weight.data)
+        print(f"🔄 已将 TransE 的参数复制到 TransH")
+        
+        transH_model.train()
+        transH_epoch_loss = 0
+        print("🔄 训练 TransH...")
+        progress = tqdm(loader, desc=f"TransH Epoch {epoch+1}")
+        
+        for h_list, r_list, t_list in progress:
+            h = torch.tensor([mapper.entity_to_id[h] for h in h_list], device=device)
+            r = torch.tensor([mapper.relation_to_id[r] for r in r_list], device=device)
+            t = torch.tensor([mapper.entity_to_id[t] for t in t_list], device=device)
+
+            # 负样本生成
+            neg_t = torch.randint(0, mapper.entity_count, (len(h), NEGATIVE_SAMPLES), device=device)
+            pos_t_expanded = t.unsqueeze(1).expand(-1, NEGATIVE_SAMPLES)
+            mask = (neg_t == pos_t_expanded)
+            while mask.any():
+                neg_t[mask] = torch.randint(0, mapper.entity_count, (mask.sum(),), device=device)
+                mask = (neg_t == pos_t_expanded)
+
+            # 前向
+            pos_score = transH_model(h, r, t)
+            neg_score = transH_model(
+                h.unsqueeze(1).expand(-1, NEGATIVE_SAMPLES).reshape(-1),
+                r.unsqueeze(1).expand(-1, NEGATIVE_SAMPLES).reshape(-1),
+                neg_t.reshape(-1)
+            ).reshape(-1, NEGATIVE_SAMPLES)
+
+            loss = torch.mean(torch.relu(pos_score.unsqueeze(1) - neg_score + 1.0))
+
+            # 反向
+            transH_optimizer.zero_grad()
+            loss.backward()
+            transH_optimizer.step()
+
+            # 归一化
+            transH_model.normalize_entities()
+
+            transH_epoch_loss += loss.item()
+            progress.set_postfix(loss=loss.item())
+        
+        transH_scheduler.step()
+        print(f"✅ TransH Epoch {epoch+1} Loss: {transH_epoch_loss / len(loader):.4f}")
+    
+    # 保存最终模型
+    torch.save({
+        'model_state_dict': transE_model.state_dict(),
+        'entity_count': mapper.entity_count,
+        'relation_count': mapper.relation_count,
+        'embedding_dim': EMBEDDING_DIM,
+        'entity_to_id': mapper.entity_to_id,
+        'relation_to_id': mapper.relation_to_id,
+    }, TRAINED_MODEL_PATHS['TransE'])
+    print(f"✅ TransE 最终模型已保存")
+    
+    torch.save({
+        'model_state_dict': transH_model.state_dict(),
+        'entity_count': mapper.entity_count,
+        'relation_count': mapper.relation_count,
+        'embedding_dim': EMBEDDING_DIM,
+        'entity_to_id': mapper.entity_to_id,
+        'relation_to_id': mapper.relation_to_id,
+    }, TRAINED_MODEL_PATHS['TransH'])
+    print(f"✅ TransH 最终模型已保存")
 
 def load_model(model_class, model_path, mapper, device):
     checkpoint = torch.load(model_path, map_location=device)
@@ -383,7 +453,6 @@ def evaluate_model(model, dataset, mapper, device, k_list=(1, 3, 10)):
     return hits_at, mrr
 
 def evaluate_ensemble(models_with_weights, dev_dataset, mapper, device, k_list=(1, 3, 10), rrf_k=60):
-# def evaluate_ensemble_rrf(models_with_weights, dev_dataset, mapper, device, k_list=(1, 3, 10), rrf_k=60):
     """
     使用 Reciprocal Rank Fusion (RRF) 融合多个模型的排序结果
     特别要求：若正确答案不在 Top10 候选中，则 MRR 得分为 0
@@ -436,7 +505,7 @@ def evaluate_ensemble(models_with_weights, dev_dataset, mapper, device, k_list=(
             # ========== 排序（降序）==========
             ranked_indices = np.argsort(rrf_scores)[::-1]
 
-            # ========== 获取 Top10 预测结果 ==========
+            # ========== 获取 Top10 预测结果 ==========  
             top10_ids = ranked_indices[:10]
             top10_entities = [mapper.id_to_entity[i] for i in top10_ids]
 
@@ -470,9 +539,7 @@ def evaluate_ensemble(models_with_weights, dev_dataset, mapper, device, k_list=(
     return hits_at, mrr
 
 
-# ==================== 融合预测 ====================
 def predict_ensemble(models_with_weights, test_dataset, mapper, device, max_head_entities=None, rrf_k=60): 
-# def predict_ensemble_rrf(models_with_weights, test_dataset, mapper, device, max_head_entities=None, rrf_k=60):
     """
     使用 RRF 融合多个模型的预测结果（与 evaluate_ensemble_rrf 保持一致）
     输出每个 query 的 Top10 预测结果
@@ -530,11 +597,12 @@ def predict_ensemble(models_with_weights, test_dataset, mapper, device, max_head
         zf.write(OUTPUT_FILE_PATH, arcname=os.path.basename(OUTPUT_FILE_PATH))
     print(f"✅ 已压缩为: {zip_path}")
 
-
-# ==================== 主函数 ====================
 def main():
-    device = torch.device('mps') if torch.backends.mps.is_available() else \
-             torch.device('cpu')
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+    else:
+        device = torch.device('mps') if torch.backends.mps.is_available() else \
+                 torch.device('cpu')
     print(f"🚀 使用设备: {device}")
 
     train_data = KnowledgeGraphDataset(TRAIN_FILE_PATH, max_lines=MAX_LINES, is_train=True)
@@ -545,34 +613,47 @@ def main():
     mapper.build_mappings(train_data, dev_data, test_data)
     print(f"实体数: {mapper.entity_count}, 关系数: {mapper.relation_count}")
 
-    model_classes = {
-        'TransE': TransE, ##【TODO】实际跑的时候要放开的这里。
-        'TransH': TransH,
-        'TransD': TransD,
+    # 检查是否需要联合训练
+    if FORCE_RETRAIN or not (os.path.exists(TRAINED_MODEL_PATHS['TransE']) and os.path.exists(TRAINED_MODEL_PATHS['TransH'])):
+        # 初始化模型
+        transE_model = TransE(mapper.entity_count, mapper.relation_count, EMBEDDING_DIM)
+        transH_model = TransH(mapper.entity_count, mapper.relation_count, EMBEDDING_DIM)
+        
+        # 联合训练 TransE 和 TransH，采用 (e+h)*epoch 的方式
+        combined_train_model(transE_model, transH_model, train_data, mapper, device)
+    else:
+        print("✅ 已存在训练好的模型，跳过训练")
+
+    # ==================== 评估 ====================
+    print("\n" + "="*50)
+    print("📈 开始评估")
+    print("="*50)
+
+    # 加载 TransE
+    transE_model = load_model(TransE, TRAINED_MODEL_PATHS['TransE'], mapper, device)
+    print(f"\n📊 评估 TransE")
+    evaluate_model(transE_model, dev_data, mapper, device)
+
+    # 加载 TransH
+    transH_model = load_model(TransH, TRAINED_MODEL_PATHS['TransH'], mapper, device)
+    print(f"\n📊 评估 TransH (combined training)")
+    evaluate_model(transH_model, dev_data, mapper, device)
+
+    # ==================== 融合预测（可选）====================
+    # 如果你想融合，可以加权
+    loaded_models_with_weight = {
+        'TransE': (transE_model, 1.0),
+        'TransH': (transH_model, 1.5),  # 给更高权重，因为联合训练可能更准
     }
 
-    # 训练所有模型
-    for name, Cls in model_classes.items():
-        model = Cls(mapper.entity_count, mapper.relation_count, EMBEDDING_DIM)
-        train_model(model, name, train_data, mapper, device)
+    # 融合评估
+    evaluate_ensemble(loaded_models_with_weight, dev_data, mapper, device)
 
-    # 加载并评估每个模型
-    loaded_models_with_weight = {}
-    for name, Cls in model_classes.items():
-        model = load_model(Cls, TRAINED_MODEL_PATHS[name], mapper, device)
-        loaded_models_with_weight[name] = (model, 1.0)
-        print(f"\n📈 正在评估模型: {name}")
-        ##【TODO】实际跑的时候要放开的这里。
-        evaluate_model(model, dev_data, mapper, device) 
-    
-    # ##【TODO】实际跑的时候要放开的这里。
-    # # 🔥 评估融合模型
-    # evaluate_ensemble(loaded_models_with_weight, dev_data, mapper, device) 
+    # 融合预测
+    predict_ensemble(loaded_models_with_weight, test_data, mapper, device, MAX_HEAD_ENTITIES)
 
-    # ##【TODO】实际跑的时候要放开的这里。
-    # # 执行融合预测
-    # predict_ensemble(loaded_models_with_weight, test_data, mapper, device, MAX_HEAD_ENTITIES)
-    # print("🎉 所有任务完成！融合预测及评估已完成。")
+    print("🎉 联合训练完成！(e+h)*epoch 训练方式执行成功。")
+
 
 if __name__ == "__main__":
     main()
