@@ -16,7 +16,7 @@ np.random.seed(42)
 torch.manual_seed(42)
 torch.cuda.manual_seed_all(42)
 
-scheme_type = "s7_ep10_bs128"
+scheme_type = "s7_ep10"
 # 数据路径（请根据你的实际路径修改）
 BASE_DIR = "/mnt/d/forCoding_data/Tianchi_EcommerceKG"
 TRAIN_FILE_PATH = f"{BASE_DIR}/originalData/OpenBG500/OpenBG500_train.tsv"
@@ -36,7 +36,7 @@ TRAINED_MODEL_PATHS = {
 }
 
 # 超参数
-EMBEDDING_DIM = 128
+EMBEDDING_DIM = 100
 LEARNING_RATE = 0.001
 WEIGHT_DECAY = 1e-5
 EPOCHS = 10  # 【TODO】可增加
@@ -490,14 +490,14 @@ def main():
     transH_model_eval = load_model(TransH, TRAINED_MODEL_PATHS['TransH'], mapper, device)
     transD_model_eval = load_model(TransD, TRAINED_MODEL_PATHS['TransD'], mapper, device)
 
-    # print(f"\n📊 评估 TransE")
-    # evaluate_model(transE_model_eval, dev_data, mapper, device)
+    print(f"\n📊 评估 TransE")
+    evaluate_model(transE_model_eval, dev_data, mapper, device)
 
-    # print(f"\n📊 评估 TransH (warm-start)")
-    # evaluate_model(transH_model_eval, dev_data, mapper, device)
+    print(f"\n📊 评估 TransH (warm-start)")
+    evaluate_model(transH_model_eval, dev_data, mapper, device)
 
-    # print(f"\n📊 评估 TransD (warm-start)")
-    # evaluate_model(transD_model_eval, dev_data, mapper, device)
+    print(f"\n📊 评估 TransD (warm-start)")
+    evaluate_model(transD_model_eval, dev_data, mapper, device)
 
     # ==================== 融合预测 ====================
     loaded_models_with_weight = {
@@ -515,9 +515,7 @@ if __name__ == "__main__":
     main()
 
 ## 输出：
-# /home/xiuminke/miniconda3/envs/ml12/lib/python3.11/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
-#   import pynvml  # type: ignore[import]
-# 🚀 使用设备: cuda
+#  使用设备: cuda
 # 加载数据: /mnt/d/forCoding_data/Tianchi_EcommerceKG/originalData/OpenBG500/OpenBG500_train.tsv
 # 共加载 1242550 个三元组
 # 加载数据: /mnt/d/forCoding_data/Tianchi_EcommerceKG/originalData/OpenBG500/OpenBG500_dev.tsv
